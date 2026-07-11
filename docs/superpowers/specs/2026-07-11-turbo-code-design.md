@@ -50,7 +50,7 @@ All permissively licensed; none originate from the OpenCode project.
 - `anthropics/anthropic-sdk-go`, `openai/openai-go`
 - AWS SDK for Go v2 (Bedrock)
 - `mark3labs/mcp-go` (MCP client)
-- LSP: `go.lsp.dev` packages or a small hand-rolled JSON-RPC client if they don't fit
+- LSP: `go.lsp.dev/jsonrpc2` + `go.lsp.dev/protocol` (types and transport; the client pool itself is ours)
 
 ### Delivery phases
 
