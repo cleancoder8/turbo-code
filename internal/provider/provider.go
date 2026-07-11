@@ -22,9 +22,9 @@ type ToolCall struct {
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"` // assistant only
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // assistant only
 	ToolCallID string     `json:"tool_call_id,omitempty"` // RoleTool only
-	IsError    bool       `json:"is_error,omitempty"`      // RoleTool only
+	IsError    bool       `json:"is_error,omitempty"`     // RoleTool only
 }
 
 type ToolDef struct {
@@ -45,7 +45,7 @@ type EventKind int
 
 const (
 	EventTextDelta EventKind = iota
-	EventToolCall // one COMPLETE tool call (providers accumulate deltas internally)
+	EventToolCall            // one COMPLETE tool call (providers accumulate deltas internally)
 	EventDone
 	EventError
 )
