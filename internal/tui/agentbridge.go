@@ -111,7 +111,7 @@ func (a *App) flushStreamAsMarkdown() {
 	if a.stream == "" {
 		return
 	}
-	r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(a.width-2))
+	r, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(a.width-2))
 	if err == nil {
 		if out, rerr := r.Render(a.stream); rerr == nil {
 			a.stream = ""
