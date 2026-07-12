@@ -23,6 +23,26 @@ Turbo Code is an in-house terminal AI coding agent for company use, functionally
 - Share/publish feature, IDE extensions, GitHub bot integration, themes marketplace, web UI.
 - Windows support may lag; primary targets are macOS and Linux.
 
+## Deferred follow-up: TUI visual/feature parity pass
+
+Phase 1 shipped a deliberately bare TUI shell (one accent color, no header
+chrome, no modal dialogs). User feedback after using it: the app "looks
+nothing like OpenCode" — specifically colors/theme, layout/chrome, and
+missing features all fall short. Scope for a future brainstorming session:
+
+- Full theme pass: cohesive dark palette beyond the single `BrandColor`
+  accent (borders, muted text, role-based coloring), since no live
+  OpenCode reference is available to match against — design from
+  Charm/Bubble Tea ecosystem conventions.
+- Header/banner chrome (app name/version), not just the bottom status bar.
+- Model picker dialog (switch models mid-session, not just `--model` at startup).
+- Session picker dialog (browse/resume sessions, not just `--continue` or the `sessions` CLI list).
+- Help/keybind overlay (`?` key).
+
+Not scoped yet: dialog interaction style (centered modal vs. full-screen
+replace vs. inline expand) — needs its own design pass, likely with the
+visual companion for layout mockups.
+
 ## Architecture
 
 Single Go binary (`turbo-code`). Bubble Tea owns the TUI event loop; the agent runs in goroutines and streams events to the TUI over channels. No daemon, no IPC.
