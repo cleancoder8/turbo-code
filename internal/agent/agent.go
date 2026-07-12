@@ -41,6 +41,18 @@ type Agent struct {
 	Session   *session.Session
 }
 
+// emit sends ev on out, but respects ctx cancellation so Send's goroutine
+// never blocks forever on a consumer that stopped draining the channel.
+// It reports whether the send succeeded; false means the caller should stop.
+func emit(ctx context.Context, out chan<- Event, ev Event) bool {
+	select {
+	case out <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func (a *Agent) Send(ctx context.Context, text string) <-chan Event {
 	out := make(chan Event)
 	go func() {
@@ -53,7 +65,7 @@ func (a *Agent) Send(ctx context.Context, text string) <-chan Event {
 				Messages: a.Session.Messages, Tools: a.Tools.Defs(),
 			})
 			if err != nil {
-				out <- Event{Kind: EventError, Err: err}
+				emit(ctx, out, Event{Kind: EventError, Err: err})
 				return
 			}
 			var textBuf strings.Builder
@@ -62,14 +74,16 @@ func (a *Agent) Send(ctx context.Context, text string) <-chan Event {
 				switch ev.Kind {
 				case provider.EventTextDelta:
 					textBuf.WriteString(ev.Text)
-					out <- Event{Kind: EventTextDelta, Text: ev.Text}
+					if !emit(ctx, out, Event{Kind: EventTextDelta, Text: ev.Text}) {
+						return
+					}
 				case provider.EventToolCall:
 					calls = append(calls, *ev.ToolCall)
 				case provider.EventDone:
 					usage.InputTokens += ev.Usage.InputTokens
 					usage.OutputTokens += ev.Usage.OutputTokens
 				case provider.EventError:
-					out <- Event{Kind: EventError, Err: ev.Err}
+					emit(ctx, out, Event{Kind: EventError, Err: ev.Err})
 					return
 				}
 			}
@@ -77,13 +91,17 @@ func (a *Agent) Send(ctx context.Context, text string) <-chan Event {
 				Role: provider.RoleAssistant, Content: textBuf.String(), ToolCalls: calls,
 			})
 			if len(calls) == 0 {
-				out <- Event{Kind: EventTurnDone, Usage: usage}
+				emit(ctx, out, Event{Kind: EventTurnDone, Usage: usage})
 				return
 			}
 			for _, c := range calls {
-				out <- Event{Kind: EventToolStart, CallID: c.ID, ToolName: c.Name, ToolArgs: string(c.Input)}
+				if !emit(ctx, out, Event{Kind: EventToolStart, CallID: c.ID, ToolName: c.Name, ToolArgs: string(c.Input)}) {
+					return
+				}
 				res := a.runTool(ctx, c)
-				out <- Event{Kind: EventToolEnd, CallID: c.ID, ToolName: c.Name, Result: res}
+				if !emit(ctx, out, Event{Kind: EventToolEnd, CallID: c.ID, ToolName: c.Name, Result: res}) {
+					return
+				}
 				a.Session.Append(provider.Message{
 					Role: provider.RoleTool, Content: res.Content, ToolCallID: c.ID, IsError: res.IsError,
 				})

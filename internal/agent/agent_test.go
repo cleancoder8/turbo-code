@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"testing"
+	"time"
 
 	"turbo-code/internal/permission"
 	"turbo-code/internal/provider"
@@ -104,4 +106,41 @@ func TestMutatingToolDenied(t *testing.T) {
 		}
 	}
 	t.Fatal("no ToolEnd event")
+}
+
+// TestSendGoroutineExitsOnContextCancel verifies that Send's internal
+// goroutine does not leak when the consumer stops draining the channel and
+// cancels the context. It never reads from the channel again after the
+// first event, so a bare (non-select) `out <- ev` send in the implementation
+// would block forever and the goroutine count would never drop back down.
+func TestSendGoroutineExitsOnContextCancel(t *testing.T) {
+	f := &provider.Fake{Turns: [][]provider.Event{
+		{
+			{Kind: provider.EventTextDelta, Text: "a"},
+			{Kind: provider.EventTextDelta, Text: "b"},
+			{Kind: provider.EventTextDelta, Text: "c"},
+			{Kind: provider.EventDone},
+		},
+	}}
+	a := newAgent(t, f, echoTool{}, func(permission.Request) permission.Decision { return permission.Deny })
+	ctx, cancel := context.WithCancel(context.Background())
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	ch := a.Send(ctx, "hello")
+	<-ch // consume the first event; the goroutine now blocks trying to send the next one
+	cancel()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runtime.GC()
+		if runtime.NumGoroutine() <= before {
+			return // Send's goroutine exited; no leak
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Send's goroutine appears to have leaked after ctx cancellation (goroutines before=%d, now=%d)", before, runtime.NumGoroutine())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
