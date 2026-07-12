@@ -47,8 +47,12 @@ func (Grep) Run(ctx context.Context, params json.RawMessage) (Result, error) {
 	}
 	var sb strings.Builder
 	count := 0
+	var walkErr error
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || count >= 200 {
+			if err != nil && path == root {
+				walkErr = err
+			}
 			return fs.SkipAll
 		}
 		if d.IsDir() {
@@ -73,5 +77,8 @@ func (Grep) Run(ctx context.Context, params json.RawMessage) (Result, error) {
 		}
 		return nil
 	})
+	if walkErr != nil {
+		return Result{Content: walkErr.Error(), IsError: true}, nil
+	}
 	return Result{Content: sb.String()}, nil
 }

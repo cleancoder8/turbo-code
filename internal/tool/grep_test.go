@@ -31,3 +31,23 @@ func TestGrep(t *testing.T) {
 		t.Fatal("nonexistent path should be IsError")
 	}
 }
+
+func TestGrepUnreadableRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; permission bits are ignored")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0o755)
+
+	res := mustRun(t, Grep{}, `{"pattern": "x", "path": "`+locked+`"}`)
+	if !res.IsError {
+		t.Fatalf("unreadable root dir should be IsError, got %q", res.Content)
+	}
+}
