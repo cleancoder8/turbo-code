@@ -7,6 +7,9 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"turbo-code/internal/agent"
+	"turbo-code/internal/permission"
 )
 
 type App struct {
@@ -20,6 +23,9 @@ type App struct {
 	status    string // right side of status bar (tokens, state)
 
 	onSubmit func(text string) tea.Cmd // wired by Task 15
+
+	agent       *agent.Agent
+	pendingPerm *permAskMsg
 
 	width, height int
 	ready         bool
@@ -72,7 +78,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
 		a.layout()
+	case permAskMsg:
+		m := msg
+		a.pendingPerm = &m
+		return a, nil
+	case agentEventMsg:
+		return a, a.handleAgentEvent(msg)
+	case agentDoneMsg:
+		a.setStatus("ready")
+		return a, nil
 	case tea.KeyMsg:
+		if a.pendingPerm != nil {
+			switch msg.String() {
+			case "y":
+				a.answerPerm(permission.AllowOnce)
+			case "a":
+				a.answerPerm(permission.AllowAlways)
+			case "n", "esc":
+				a.answerPerm(permission.Deny)
+			}
+			return a, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return a, tea.Quit
@@ -109,5 +135,9 @@ func (a *App) View() string {
 	if !a.ready {
 		return "loading…"
 	}
-	return a.viewport.View() + "\n" + inputBorder.Render(a.input.View()) + "\n" + a.statusBar()
+	perm := a.permView()
+	if perm != "" {
+		perm += "\n"
+	}
+	return a.viewport.View() + "\n" + perm + inputBorder.Render(a.input.View()) + "\n" + a.statusBar()
 }
