@@ -49,6 +49,26 @@ func TestLoadSkipsCorruptTrailingLine(t *testing.T) {
 	}
 }
 
+func TestAppendAfterCloseDoesNotMutateMemory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Create(dir, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(provider.Message{Role: provider.RoleUser, Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	err = s.Append(provider.Message{Role: provider.RoleAssistant, Content: "lost"})
+	if err == nil {
+		t.Fatal("want error appending to closed session")
+	}
+	if len(s.Messages) != 1 {
+		t.Fatalf("Messages mutated despite failed write: %+v", s.Messages)
+	}
+}
+
 func TestListNewestFirst(t *testing.T) {
 	dir := t.TempDir()
 	a, _ := Create(dir, "a")

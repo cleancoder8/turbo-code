@@ -120,8 +120,11 @@ func List(dir string) ([]Meta, error) {
 }
 
 func (s *Session) Append(m provider.Message) error {
+	if err := writeLine(s.f, m); err != nil {
+		return err
+	}
 	s.Messages = append(s.Messages, m)
-	return writeLine(s.f, m)
+	return nil
 }
 
 func (s *Session) Close() error { return s.f.Close() }
