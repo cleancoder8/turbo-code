@@ -28,6 +28,18 @@ func NewAnthropic(apiKey, baseURL string, models []Model) *Anthropic {
 
 func (a *Anthropic) Models() []Model { return a.models }
 
+// emit sends ev on out, but respects ctx cancellation so Stream's goroutine
+// never blocks forever on a consumer that stopped draining the channel.
+// It reports whether the send succeeded; false means the caller should stop.
+func emit(ctx context.Context, out chan<- Event, ev Event) bool {
+	select {
+	case out <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func toAnthropicMessages(msgs []Message) []anthropic.MessageParam {
 	var out []anthropic.MessageParam
 	for _, m := range msgs {
@@ -96,32 +108,36 @@ func (a *Anthropic) Stream(ctx context.Context, req Request) (<-chan Event, erro
 		for stream.Next() {
 			event := stream.Current()
 			if err := message.Accumulate(event); err != nil {
-				ch <- Event{Kind: EventError, Err: err}
+				emit(ctx, ch, Event{Kind: EventError, Err: err})
 				return
 			}
 			if event.Type == "content_block_delta" && event.Delta.Text != "" {
-				ch <- Event{Kind: EventTextDelta, Text: event.Delta.Text}
+				if !emit(ctx, ch, Event{Kind: EventTextDelta, Text: event.Delta.Text}) {
+					return
+				}
 			}
 		}
 		if err := stream.Err(); err != nil {
-			ch <- Event{Kind: EventError, Err: err}
+			emit(ctx, ch, Event{Kind: EventError, Err: err})
 			return
 		}
 
 		for _, block := range message.Content {
 			if tu, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
-				ch <- Event{Kind: EventToolCall, ToolCall: &ToolCall{
+				if !emit(ctx, ch, Event{Kind: EventToolCall, ToolCall: &ToolCall{
 					ID:    tu.ID,
 					Name:  tu.Name,
 					Input: json.RawMessage(tu.Input),
-				}}
+				}}) {
+					return
+				}
 			}
 		}
 
-		ch <- Event{Kind: EventDone, Usage: Usage{
+		emit(ctx, ch, Event{Kind: EventDone, Usage: Usage{
 			InputTokens:  int(message.Usage.InputTokens),
 			OutputTokens: int(message.Usage.OutputTokens),
-		}}
+		}})
 	}()
 	return ch, nil
 }
