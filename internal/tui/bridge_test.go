@@ -46,6 +46,53 @@ func TestStreamedReplyAppearsInTranscript(t *testing.T) {
 	}, teatest.WithDuration(5*time.Second))
 }
 
+// echoNonMutatingTool is a tool.Tool whose Mutating() is false, so it runs
+// without a permission prompt — used to exercise the tool-start/tool-end
+// path without also having to drive the permission bridge.
+type echoNonMutatingTool struct{}
+
+func (echoNonMutatingTool) Name() string            { return "lookup" }
+func (echoNonMutatingTool) Description() string     { return "looks stuff up" }
+func (echoNonMutatingTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (echoNonMutatingTool) Mutating() bool          { return false }
+func (echoNonMutatingTool) Run(ctx context.Context, params json.RawMessage) (tool.Result, error) {
+	return tool.Result{Content: "lookup result"}, nil
+}
+
+// TestAssistantTextBeforeToolCallIsFlushed verifies that explanatory prose
+// the model emits before a tool call in the same round is rendered into the
+// transcript as its own block, rather than being silently discarded when
+// appendBlock resets a.stream for the tool-start line.
+func TestAssistantTextBeforeToolCallIsFlushed(t *testing.T) {
+	call := &provider.ToolCall{ID: "c1", Name: "lookup", Input: json.RawMessage(`{}`)}
+	s, err := session.Create(t.TempDir(), "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := &agent.Agent{
+		Provider: &provider.Fake{Turns: [][]provider.Event{
+			{
+				{Kind: provider.EventTextDelta, Text: "let me check that for you"},
+				{Kind: provider.EventToolCall, ToolCall: call},
+				{Kind: provider.EventDone},
+			},
+			{{Kind: provider.EventTextDelta, Text: "here you go"}, {Kind: provider.EventDone}},
+		}},
+		Model: "fake-model", MaxTokens: 1024, System: "test",
+		Tools: tool.NewRegistry(echoNonMutatingTool{}), Session: s,
+		Perms: permission.New(func(permission.Request) permission.Decision { return permission.AllowOnce }),
+	}
+	app := NewWithAgent(ag, "fake-model", "s1")
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(100, 30))
+
+	tm.Type("do a lookup")
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+		return strings.Contains(string(b), "let me check that for you")
+	}, teatest.WithDuration(5*time.Second))
+}
+
 // mutatingTool is a tool.Tool whose Mutating() is true, so calling it
 // requires going through the permission bridge (App.pendingPerm /
 // permAskMsg) rather than being auto-allowed.

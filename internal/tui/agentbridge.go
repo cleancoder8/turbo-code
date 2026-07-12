@@ -77,6 +77,10 @@ func (a *App) handleAgentEvent(msg agentEventMsg) tea.Cmd {
 		a.stream += msg.ev.Text
 		a.refresh()
 	case agent.EventToolStart:
+		// Flush any assistant prose accumulated before this tool call as its
+		// own block first — otherwise appendBlock below would silently
+		// discard it by resetting a.stream without rendering it.
+		a.flushStreamAsMarkdown()
 		args := msg.ev.ToolArgs
 		if r := []rune(args); len(r) > 80 {
 			args = string(r[:80]) + "…"
