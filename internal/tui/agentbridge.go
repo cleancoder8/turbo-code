@@ -39,12 +39,25 @@ func NewWithAgent(ag *agent.Agent, modelID, sessionID string) *App {
 func Run(ag *agent.Agent, modelID, sessionID string) error {
 	app := NewWithAgent(ag, modelID, sessionID)
 	p := tea.NewProgram(app, tea.WithAltScreen())
+	done := make(chan struct{})
 	ag.Perms = permission.New(func(req permission.Request) permission.Decision {
-		reply := make(chan permission.Decision)
+		// Buffered so answerPerm's send (in the Update goroutine) never
+		// blocks, even if this AskFunc has already returned via the done
+		// case below.
+		reply := make(chan permission.Decision, 1)
 		p.Send(permAskMsg{req: req, reply: reply})
-		return <-reply
+		select {
+		case d := <-reply:
+			return d
+		case <-done:
+			// Program quit (or is quitting) before the prompt was answered
+			// — p.Send may have silently dropped the message, so don't
+			// block forever waiting for a reply that will never come.
+			return permission.Deny
+		}
 	})
 	_, err := p.Run()
+	close(done)
 	return err
 }
 
@@ -65,8 +78,8 @@ func (a *App) handleAgentEvent(msg agentEventMsg) tea.Cmd {
 		a.refresh()
 	case agent.EventToolStart:
 		args := msg.ev.ToolArgs
-		if len(args) > 80 {
-			args = args[:80] + "…"
+		if r := []rune(args); len(r) > 80 {
+			args = string(r[:80]) + "…"
 		}
 		a.appendBlock(toolStyle.Render("⚙ " + msg.ev.ToolName + " " + args))
 	case agent.EventToolEnd:
