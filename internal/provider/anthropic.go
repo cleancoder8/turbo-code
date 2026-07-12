@@ -28,6 +28,19 @@ func NewAnthropic(apiKey, baseURL string, models []Model) *Anthropic {
 
 func (a *Anthropic) Models() []Model { return a.models }
 
+// errorChan returns a channel that yields a single EventError for err, then
+// closes. Used when request-param conversion fails before any SDK call is
+// made, so Stream can still satisfy its <-chan Event, error signature by
+// returning a nil error and surfacing the failure as an EventError instead.
+func errorChan(ctx context.Context, err error) <-chan Event {
+	ch := make(chan Event, 1)
+	go func() {
+		defer close(ch)
+		emit(ctx, ch, Event{Kind: EventError, Err: err})
+	}()
+	return ch
+}
+
 // emit sends ev on out, but respects ctx cancellation so Stream's goroutine
 // never blocks forever on a consumer that stopped draining the channel.
 // It reports whether the send succeeded; false means the caller should stop.
@@ -40,7 +53,11 @@ func emit(ctx context.Context, out chan<- Event, ev Event) bool {
 	}
 }
 
-func toAnthropicMessages(msgs []Message) []anthropic.MessageParam {
+// toAnthropicMessages converts domain messages to SDK params. It returns an
+// error rather than silently dropping malformed tool-call input JSON, so
+// callers can surface a proper EventError instead of sending a malformed
+// request to the API.
+func toAnthropicMessages(msgs []Message) ([]anthropic.MessageParam, error) {
 	var out []anthropic.MessageParam
 	for _, m := range msgs {
 		switch m.Role {
@@ -53,7 +70,9 @@ func toAnthropicMessages(msgs []Message) []anthropic.MessageParam {
 			}
 			for _, c := range m.ToolCalls {
 				var input any
-				json.Unmarshal(c.Input, &input)
+				if err := json.Unmarshal(c.Input, &input); err != nil {
+					return nil, err
+				}
 				blocks = append(blocks, anthropic.NewToolUseBlock(c.ID, input, c.Name))
 			}
 			out = append(out, anthropic.NewAssistantMessage(blocks...))
@@ -62,24 +81,30 @@ func toAnthropicMessages(msgs []Message) []anthropic.MessageParam {
 				anthropic.NewToolResultBlock(m.ToolCallID, m.Content, m.IsError)))
 		}
 	}
-	return out
+	return out, nil
 }
 
-func toAnthropicTools(defs []ToolDef) []anthropic.ToolUnionParam {
+// toAnthropicTools converts domain tool definitions to SDK params. It
+// returns an error rather than silently dropping a malformed schema, so
+// callers can surface a proper EventError instead of sending a malformed
+// request to the API.
+func toAnthropicTools(defs []ToolDef) ([]anthropic.ToolUnionParam, error) {
 	var out []anthropic.ToolUnionParam
 	for _, d := range defs {
 		var schema struct {
 			Properties map[string]any `json:"properties"`
 			Required   []string       `json:"required"`
 		}
-		json.Unmarshal(d.Schema, &schema)
+		if err := json.Unmarshal(d.Schema, &schema); err != nil {
+			return nil, err
+		}
 		out = append(out, anthropic.ToolUnionParam{OfTool: &anthropic.ToolParam{
 			Name:        d.Name,
 			Description: anthropic.String(d.Description),
 			InputSchema: anthropic.ToolInputSchemaParam{Properties: schema.Properties, Required: schema.Required},
 		}})
 	}
-	return out
+	return out, nil
 }
 
 // Stream implements Provider. It issues a streaming Messages.NewStreaming
@@ -88,11 +113,20 @@ func toAnthropicTools(defs []ToolDef) []anthropic.ToolUnionParam {
 // (after the accumulated message finishes), followed by a final EventDone
 // carrying usage. Any stream/accumulation error is surfaced as EventError.
 func (a *Anthropic) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	messages, err := toAnthropicMessages(req.Messages)
+	if err != nil {
+		return errorChan(ctx, err), nil
+	}
+	tools, err := toAnthropicTools(req.Tools)
+	if err != nil {
+		return errorChan(ctx, err), nil
+	}
+
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
 		MaxTokens: int64(req.MaxTokens),
-		Messages:  toAnthropicMessages(req.Messages),
-		Tools:     toAnthropicTools(req.Tools),
+		Messages:  messages,
+		Tools:     tools,
 	}
 	if req.System != "" {
 		params.System = []anthropic.TextBlockParam{{Text: req.System}}

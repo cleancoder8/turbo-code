@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -76,5 +77,37 @@ func TestAnthropicStream(t *testing.T) {
 	}
 	if usage.OutputTokens != 7 {
 		t.Fatalf("usage: %+v", usage)
+	}
+}
+
+func TestAnthropicStreamMalformedToolSchema(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be called for a malformed request")
+	}))
+	defer srv.Close()
+
+	p := NewAnthropic("test-key", srv.URL, []Model{{ID: "m", MaxTokens: 8192}})
+	ch, err := p.Stream(context.Background(), Request{
+		Model: "m", MaxTokens: 100,
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		Tools: []ToolDef{{
+			Name:   "bad",
+			Schema: json.RawMessage("{not json"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotErr bool
+	for ev := range ch {
+		if ev.Kind == EventError {
+			gotErr = true
+			if ev.Err == nil {
+				t.Fatal("expected non-nil Err on EventError")
+			}
+		}
+	}
+	if !gotErr {
+		t.Fatal("expected EventError for malformed tool schema JSON")
 	}
 }
