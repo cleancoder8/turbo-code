@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -26,6 +27,7 @@ type App struct {
 
 	agent       *agent.Agent
 	pendingPerm *permAskMsg
+	cancel      context.CancelFunc // cancels the in-flight turn's ctx, if any
 
 	width, height int
 	ready         bool
@@ -85,6 +87,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		return a, a.handleAgentEvent(msg)
 	case agentDoneMsg:
+		a.cancel = nil
 		a.setStatus("ready")
 		return a, nil
 	case tea.KeyMsg:
@@ -102,6 +105,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return a, tea.Quit
+		case "ctrl+x":
+			if a.cancel != nil {
+				a.cancel()
+				a.cancel = nil
+				a.setStatus("cancelling…")
+			}
+			return a, nil
 		case "enter":
 			// swallow enter so it never reaches the textarea (alt+enter inserts newline)
 			text := strings.TrimSpace(a.input.Value())

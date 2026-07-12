@@ -29,7 +29,9 @@ func NewWithAgent(ag *agent.Agent, modelID, sessionID string) *App {
 	app.onSubmit = func(text string) tea.Cmd {
 		app.appendBlock(userStyle.Render("> " + text))
 		app.setStatus("thinking…")
-		ch := ag.Send(context.Background(), text)
+		ctx, cancel := context.WithCancel(context.Background())
+		app.cancel = cancel
+		ch := ag.Send(ctx, text)
 		return waitEvent(ch)
 	}
 	return app
@@ -94,9 +96,11 @@ func (a *App) handleAgentEvent(msg agentEventMsg) tea.Cmd {
 			a.appendBlock(toolStyle.Render("  ✓ " + line))
 		}
 	case agent.EventTurnDone:
+		a.cancel = nil
 		a.flushStreamAsMarkdown()
 		a.setStatus(fmt.Sprintf("in %d · out %d tokens", msg.ev.Usage.InputTokens, msg.ev.Usage.OutputTokens))
 	case agent.EventError:
+		a.cancel = nil
 		a.appendBlock(errStyle.Render("error: " + msg.ev.Err.Error()))
 		a.setStatus("error")
 	}

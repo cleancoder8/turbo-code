@@ -31,6 +31,86 @@ func testAgent(t *testing.T, turns [][]provider.Event) *agent.Agent {
 	}
 }
 
+// hangingProvider simulates a stuck turn: Stream returns a channel that
+// never emits an event and only closes when ctx is cancelled. It's used to
+// verify that pressing ctrl+x can actually interrupt an in-flight turn —
+// which requires the turn's ctx to be a cancellable one derived from a
+// stored cancel func, not context.Background().
+type hangingProvider struct{}
+
+func (hangingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	ch := make(chan provider.Event)
+	go func() {
+		defer close(ch)
+		<-ctx.Done()
+	}()
+	return ch, nil
+}
+
+func (hangingProvider) Models() []provider.Model {
+	return []provider.Model{{ID: "fake-model", MaxTokens: 8192}}
+}
+
+// TestCtrlXCancelsInFlightTurn verifies that ctrl+x aborts a stuck turn by
+// cancelling its context, rather than the turn running on an
+// uncancellable context.Background() forever.
+//
+// It drives App.Update directly (rather than through teatest's rendered
+// output) because bubbletea's frame-rate-limited renderer can coalesce a
+// transient status change with the render that follows it, making
+// output-based assertions about intermediate states flaky. Here we instead
+// run the tea.Cmd returned by the "enter" Update in a goroutine (it blocks
+// on hangingProvider, exactly as production code would) and assert that
+// pressing ctrl+x actually unblocks it — i.e. that the turn's ctx really
+// got cancelled, not just that some UI text changed.
+func TestCtrlXCancelsInFlightTurn(t *testing.T) {
+	s, err := session.Create(t.TempDir(), "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := &agent.Agent{
+		Provider: hangingProvider{},
+		Model:    "fake-model", MaxTokens: 1024, System: "test",
+		Tools: tool.NewRegistry(), Session: s,
+		Perms: permission.New(func(permission.Request) permission.Decision { return permission.AllowOnce }),
+	}
+	app := NewWithAgent(ag, "fake-model", "s1")
+	app.width, app.height = 80, 24
+	app.layout()
+	app.input.SetValue("this will hang")
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(*App)
+	if cmd == nil {
+		t.Fatal("expected a command from submitting the message")
+	}
+	if app.cancel == nil {
+		t.Fatal("expected App.cancel to be set for the in-flight turn")
+	}
+
+	msgCh := make(chan tea.Msg, 1)
+	go func() { msgCh <- cmd() }()
+
+	// Give the goroutine a moment to reach the blocking receive inside
+	// hangingProvider/waitEvent before we cancel.
+	time.Sleep(50 * time.Millisecond)
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	app = model.(*App)
+	if app.cancel != nil {
+		t.Fatal("expected App.cancel to be cleared after ctrl+x")
+	}
+
+	select {
+	case msg := <-msgCh:
+		if _, ok := msg.(agentDoneMsg); !ok {
+			t.Fatalf("expected agentDoneMsg once the cancelled turn's channel closes, got %T: %+v", msg, msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not end after ctrl+x — ctx was not actually cancelled")
+	}
+}
+
 func TestStreamedReplyAppearsInTranscript(t *testing.T) {
 	ag := testAgent(t, [][]provider.Event{
 		{{Kind: provider.EventTextDelta, Text: "streamed reply"}, {Kind: provider.EventDone}},
