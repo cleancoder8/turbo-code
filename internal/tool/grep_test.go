@@ -25,4 +25,9 @@ func TestGrep(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("bad regex should be IsError")
 	}
+
+	res = mustRun(t, Grep{}, `{"pattern": "x", "path": "`+filepath.Join(dir, "does-not-exist")+`"}`)
+	if !res.IsError {
+		t.Fatal("nonexistent path should be IsError")
+	}
 }

@@ -42,6 +42,9 @@ func (Grep) Run(ctx context.Context, params json.RawMessage) (Result, error) {
 	if root == "" {
 		root = "."
 	}
+	if _, err := os.Stat(root); err != nil {
+		return Result{Content: err.Error(), IsError: true}, nil
+	}
 	var sb strings.Builder
 	count := 0
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
