@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,19 @@ func (e echoTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"ob
 func (e echoTool) Mutating() bool          { return e.mutating }
 func (e echoTool) Run(ctx context.Context, p json.RawMessage) (tool.Result, error) {
 	return tool.Result{Content: "echo:" + string(p)}, nil
+}
+
+// panicTool simulates a tool whose Run panics (e.g. an unexpected nil
+// dereference deep in a tool implementation). Used to verify Send's
+// goroutine recovers instead of crashing the whole process.
+type panicTool struct{}
+
+func (panicTool) Name() string            { return "boom" }
+func (panicTool) Description() string     { return "always panics" }
+func (panicTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (panicTool) Mutating() bool          { return false }
+func (panicTool) Run(ctx context.Context, params json.RawMessage) (tool.Result, error) {
+	panic("kaboom")
 }
 
 func newAgent(t *testing.T, fake *provider.Fake, tl tool.Tool, ask permission.AskFunc) *Agent {
@@ -106,6 +120,28 @@ func TestMutatingToolDenied(t *testing.T) {
 		}
 	}
 	t.Fatal("no ToolEnd event")
+}
+
+// TestSendRecoversFromToolPanic verifies that a panic inside a tool's Run
+// (or anywhere else in Send's goroutine) is recovered rather than crashing
+// the whole process, and is surfaced to the consumer as an EventError.
+// Without recovery, this test's process crashes with a raw panic/stack
+// trace instead of failing cleanly.
+func TestSendRecoversFromToolPanic(t *testing.T) {
+	call := &provider.ToolCall{ID: "c1", Name: "boom", Input: json.RawMessage(`{}`)}
+	f := &provider.Fake{Turns: [][]provider.Event{
+		{{Kind: provider.EventToolCall, ToolCall: call}, {Kind: provider.EventDone}},
+	}}
+	a := newAgent(t, f, panicTool{}, func(permission.Request) permission.Decision { return permission.AllowOnce })
+	evs := collect(a.Send(context.Background(), "go"))
+
+	if len(evs) == 0 {
+		t.Fatal("expected at least one event")
+	}
+	last := evs[len(evs)-1]
+	if last.Kind != EventError || last.Err == nil || !strings.Contains(last.Err.Error(), "panic") {
+		t.Fatalf("expected trailing EventError mentioning panic, got: %+v", evs)
+	}
 }
 
 // TestSendGoroutineExitsOnContextCancel verifies that Send's internal

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"turbo-code/internal/permission"
@@ -57,6 +58,16 @@ func (a *Agent) Send(ctx context.Context, text string) <-chan Event {
 	out := make(chan Event)
 	go func() {
 		defer close(out)
+		// Recover from any panic in this goroutine (e.g. a tool's Run or an
+		// unexpected nil in a streamed chunk) so it surfaces as an EventError
+		// instead of crashing the whole process. Declared after defer
+		// close(out) so it runs first (LIFO) and the error event is emitted
+		// on the channel before it's closed.
+		defer func() {
+			if r := recover(); r != nil {
+				emit(ctx, out, Event{Kind: EventError, Err: fmt.Errorf("panic: %v", r)})
+			}
+		}()
 		a.Session.Append(provider.Message{Role: provider.RoleUser, Content: text})
 		var usage provider.Usage
 		for {
