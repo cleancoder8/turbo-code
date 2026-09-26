@@ -14,6 +14,7 @@
     "build": "node scripts/build.mjs",
     "dev": "tsx src/cli.tsx",
     "typecheck": "tsc --noEmit",
+    "probe:copilot": "node scripts/probe-copilot.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

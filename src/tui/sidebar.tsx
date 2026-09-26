@@ -6,10 +6,17 @@ import type { LspStatus } from "../lsp/service.js";
 import { colors } from "./theme.js";
 
 const fmt = (n: number): string => n.toLocaleString("en-US");
-export function Sidebar({ width, height, title, usage, lsp, contextWindow, cwd, branch }: {
+export function sidebarMaxScroll(height: number, lsp: LspStatus[]): number {
+  const rows = 8 + (lsp.length === 0 ? 2 : lsp.reduce((count, item) =>
+    count + 1 + Number(item.errors + item.warnings > 0) + Number(item.state === "error" && !!item.detail), 0));
+  return Math.max(0, rows - Math.max(1, height - 5));
+}
+
+export function Sidebar({ width, height, title, usage, lsp, contextWindow, cwd, branch, scrollOffset = 0 }: {
   width: number; height?: number; title: string; usage: UsageSnapshot; lsp: LspStatus[]; contextWindow?: number; cwd?: string; branch?: string;
+  scrollOffset?: number;
 }): React.ReactElement {
-  const inner = Math.max(8, width - 3);
+  const inner = Math.max(8, width - 4);
   const row = (s: string) => s.length > inner ? s.slice(0, inner - 1) + "…" : s;
   const context = usage.lastRequest?.inputTokens;
   const used = usage.session.inputTokens + usage.session.outputTokens;
@@ -33,13 +40,19 @@ export function Sidebar({ width, height, title, usage, lsp, contextWindow, cwd, 
   }
   const shortCwd = cwd?.startsWith(os.homedir()) ? `~${cwd.slice(os.homedir().length)}` : cwd;
   const location = shortCwd ? `${shortCwd}${branch ? `:${branch}` : ""}` : undefined;
-  const bottom = [...(location ? [{ value: location, color: colors.muted }, { value: "", color: colors.muted }] : []), { value: "● turbo-code v0.1.0", color: colors.muted }];
-  const blanks = Math.max(0, (height ?? lines.length + bottom.length) - lines.length - bottom.length);
+  const bodyHeight = Math.max(1, (height ?? lines.length + 5) - 5);
+  const offset = Math.min(sidebarMaxScroll(height ?? lines.length + 5, lsp), scrollOffset);
+  const visible = lines.slice(offset, offset + bodyHeight);
+  const blanks = Math.max(0, bodyHeight - visible.length);
   const panelRow = (value: string, color = colors.text, bold = false, key?: React.Key) =>
-    <Text key={key} color={color} bold={bold} backgroundColor={colors.panel}>{` ${row(value).padEnd(Math.max(0, width - 2), " ")}`}</Text>;
-  return <Box width={width} height={height} flexDirection="column" borderStyle="bold" borderTop={false} borderBottom={false} borderRight={false} borderColor={colors.border}>
-    {lines.map((line, i) => panelRow(line.value, line.color, line.bold, `line-${i}`))}
+    <Text key={key} color={color} bold={bold} backgroundColor={colors.panel}>{`  ${row(value).padEnd(Math.max(0, width - 4), " ")}  `}</Text>;
+  return <Box width={width} height={height} flexDirection="column" overflow="hidden">
+    {panelRow("", colors.muted, false, "top")}
+    {visible.map((line, i) => panelRow(line.value, line.color, line.bold, `line-${offset + i}`))}
     {Array.from({ length: blanks }, (_, i) => panelRow("", colors.muted, false, `blank-${i}`))}
-    {bottom.map((line, i) => panelRow(line.value, line.color, false, `bottom-${i}`))}
+    {panelRow("", colors.muted, false, "gap")}
+    {panelRow(location ?? "", colors.muted, false, "location")}
+    {panelRow("● turbo-code v0.1.0", colors.muted, false, "version")}
+    {panelRow("", colors.muted, false, "bottom")}
   </Box>;
 }

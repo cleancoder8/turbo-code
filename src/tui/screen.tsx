@@ -72,6 +72,14 @@ export function Composer({ width, model, value, busy, busyLabel = "Thinking…",
   </Box>;
 }
 
+export function Processing({ phase }: { phase: number }): React.ReactElement {
+  return <Box height={1}>
+    <Text>{Array.from({ length: 8 }, (_, i) =>
+      <Text key={i} color={i === phase % 8 || i === (phase + 7) % 8 ? colors.secondary : colors.border}>▪</Text>)}</Text>
+    <Text color={colors.text}>   esc</Text><Text color={colors.muted}> interrupt</Text>
+  </Box>;
+}
+
 export function Welcome({ width, model, value, busy, onChange, onSubmit }: {
   width: number;
   model: string;

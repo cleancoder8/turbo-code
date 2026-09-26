@@ -1,4 +1,5 @@
 import React from "react";
+import process from "node:process";
 import { render } from "ink";
 import type { Agent } from "../agent/index.js";
 import type { Decision, Request as PermRequest } from "../permission/types.js";
@@ -26,17 +27,23 @@ export async function run(opts: RunOpts): Promise<void> {
     // overrides it.
     new Promise<Decision>(() => {});
 
-  const app = render(
-    <App
-      agent={opts.agent}
-      modelID={opts.modelID}
-      sessionID={opts.sessionID}
-      cwd={opts.cwd}
-      branch={opts.branch}
-      ask={ask}
-      lsp={opts.lsp}
-      contextWindow={opts.contextWindow}
-    />,
-  );
-  await app.waitUntilExit();
+  const alternateScreen = !!process.stdout.isTTY;
+  if (alternateScreen) process.stdout.write("\x1b[?1049h\x1b[H");
+  try {
+    const app = render(
+      <App
+        agent={opts.agent}
+        modelID={opts.modelID}
+        sessionID={opts.sessionID}
+        cwd={opts.cwd}
+        branch={opts.branch}
+        ask={ask}
+        lsp={opts.lsp}
+        contextWindow={opts.contextWindow}
+      />,
+    );
+    await app.waitUntilExit();
+  } finally {
+    if (alternateScreen) process.stdout.write("\x1b[?1049l");
+  }
 }

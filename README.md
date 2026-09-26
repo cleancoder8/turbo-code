@@ -35,4 +35,10 @@ In the TUI, Enter sends, Ctrl+X cancels the current turn, Ctrl+C quits, and Ctrl
 
 The tools are `read`, `ls`, `glob`, `grep`, `write`, `edit`, and `bash`. Tool calls run through the Copilot SDK and retain turbo-code's permission prompts for mutating operations.
 
+## Direct model transport probe
+
+`npm run probe:copilot` checks direct Copilot model discovery without changing the chat harness. `npm run probe:copilot -- --roundtrip` attempts a streamed `probe_echo` tool call and feeds its harmless local result back to the model. Choose a model with `--model <id>`. The probe takes `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, falling back to `gh auth token`; it never prints the token. The round trip makes two model requests and may use Copilot credits.
+
+Model discovery does not guarantee inference access. On the account used to develop this probe, `gh auth token` listed models but direct chat requests returned `400 model_not_supported`. The [transport milestone](docs/cross-harness-roadmap.md) remains open until authentication, streaming, and the tool round trip succeed with turbo-code's own supported login. The normal SDK-backed chat path is unchanged.
+
 Local transcript and usage files are stored under `~/.local/share/turbo-code/sessions/`. Copilot keeps its own agent session state under `~/.copilot/`. Earlier non-Copilot turbo-code sessions remain on disk but are not listed or resumed by the Copilot-only CLI.

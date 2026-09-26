@@ -65,14 +65,14 @@ export class CopilotProvider implements Provider {
         model: opts.model,
         streaming: true,
         workingDirectory: opts.workingDirectory,
+        systemMessage: { mode: "append" as const, content: opts.system },
         tools,
         availableTools: names.map((name) => `custom:tc_${name}`),
         onPermissionRequest,
       };
       const session = opts.resume
         ? await client.resumeSession(opts.sessionId, common)
-        : await client.createSession({ ...common, sessionId: opts.sessionId,
-            systemMessage: { mode: "append", content: opts.system } });
+        : await client.createSession({ ...common, sessionId: opts.sessionId });
       return new CopilotProvider(client, session, opts.model);
     } catch (e) {
       await client.stop();

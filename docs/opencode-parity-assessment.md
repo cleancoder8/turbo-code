@@ -8,6 +8,8 @@ This is a code-based assessment of turbo-code's TypeScript harness against the l
 
 Turbo-code intentionally supports GitHub Copilot only. Matching OpenCode's provider catalog is outside this parity target. The existing [TypeScript migration plan](typescript-migration-plan.md) and [right-sidebar plan](right-sidebar-plan.md) include historical design notes; current behavior should be checked against `src/` and the README.
 
+For priorities drawn from Claude Code and Codex as well as OpenCode, see the [cross-harness roadmap](cross-harness-roadmap.md).
+
 ## Assessment
 
 Turbo-code already has a useful base: a Copilot SDK session, read/search/write/edit/shell tools, permission prompts, local JSONL transcripts, usage accounting, configured LSP status, and an Ink chat UI. Its largest shortcoming is the absence of a durable, structured representation of a running turn. The TUI has to infer conversation state from flat messages plus transient callbacks. This is the root of several visible differences: synthetic thinking, paced rather than direct streaming, lost tool history after resume, fragile spacing, and hard-to-maintain scrolling.
@@ -30,7 +32,7 @@ OpenCode references above are relative to `../opencode` and describe the checked
 
 The Copilot SDK owns the persistent model session and runs registered custom tools (`src/provider/copilot.ts`). At the same time, `src/agent/agent.ts` contains a separate tool-call loop intended for providers that emit local `tool_call` events. The Copilot adapter sends the latest user prompt to the SDK rather than replaying the local message list. Both arrangements can be valid separately, but together they leave two versions of the conversation: Copilot's session and turbo-code's JSONL transcript. An abort, crash, or partial write can make them disagree. The local store also lacks turn IDs, part IDs, tool lifecycle records, completion status, and project identity.
 
-Keep the Copilot SDK as the execution owner. Add one small application-level turn/event interface that normalizes SDK events, persists them, and supplies a stable projection to the UI. The TUI should render that projection, not invent or own turn history. This is a deeper module boundary than adding more callbacks between the provider, agent, and screen.
+The intended architecture is different: use a GitHub Copilot login for model access, while turbo-code owns the agent loop, tool selection and execution, permissions, context, session history, and UI. The current Copilot SDK is a transport to the Copilot CLI, which owns its own agent loop; registering turbo-code's custom tool handlers does not transfer orchestration to turbo-code. The installed SDK does not expose a public raw-inference method that would make it a drop-in model transport. First validate a direct Copilot model adapter that streams text, tool calls, usage, and errors under the user's entitlement. Then make turbo-code's durable turn/event journal the sole execution history and render its projection in the TUI. Keep the SDK path working until the replacement is proven. See the [cross-harness roadmap](cross-harness-roadmap.md) for the migration sequence and transport risks.
 
 There is a separate presentation constraint: Ink plus manually formatted strings can imitate OpenCode's colors and padding, but OpenCode's OpenTUI renderer supplies native scrolling, interactive elements, markdown, and diff layout. A renderer migration is a tradeoff to evaluate after the event model is stable, not a prerequisite for fixing the current flow.
 
@@ -38,13 +40,13 @@ There is a separate presentation constraint: Ink plus manually formatted strings
 
 ### 1. Make turns durable and resume correctly
 
-Define versioned session records for user input, assistant text deltas/final text, tool start/progress/result, usage, error, cancellation, and turn completion. Include stable turn/part IDs, timestamps, project directory, model, and Copilot session ID. Persist an event before making it visible, or document the bounded recovery window if batching is necessary. Reconstruct the transcript and running status from these records. Reconcile interrupted local turns with the SDK session on resume; do not silently mark them complete.
+Define versioned session records for user input, assistant text deltas/final text, tool start/progress/result, usage, error, cancellation, and turn completion. Include stable turn/part IDs, timestamps, project directory, and model. During migration, retain the Copilot SDK session ID only for existing sessions. Persist an event before making it visible, or document the bounded recovery window if batching is necessary. Reconstruct the transcript and running status from these records. Once the direct model transport is in place, turbo-code's journal is the source of truth; identify interrupted turns on resume rather than silently marking them complete.
 
 Done when reopening a session restores the same order of text and tool parts, identifies interrupted turns, and cannot select a session from a different project through `--continue`.
 
 ### 2. Make activity truthful and prompt
 
-Remove the artificial typewriter backlog. Render incoming provider deltas promptly, using only light frame batching to avoid excessive re-renders. Show distinct waiting, tool-running, retrying, and reply-streaming states. If the Copilot SDK does not expose reasoning content, show elapsed waiting or activity without labeling it as actual thought. Stream shell stdout/stderr during execution, with bounded capture and an expandable final result.
+Remove the artificial typewriter backlog. Render incoming provider deltas promptly, using only light frame batching to avoid excessive re-renders. Show distinct waiting, tool-running, retrying, and reply-streaming states. Display reasoning only when the model transport actually emits it, and otherwise show elapsed waiting or activity without labeling it as actual thought. Stream shell stdout/stderr during execution, with bounded capture and an expandable final result.
 
 Done when the first available delta appears promptly, a long command displays progress before it exits, and no response is delayed solely to simulate typing.
 
@@ -62,7 +64,7 @@ Done when a proposed edit can be inspected before approval and a completed edit 
 
 ### 5. Fill workflow gaps selectively
 
-Add project-scoped session browsing and explicit session selection, Copilot connection/status and model discovery, accurate model context limits, visible usage uncertainty, and app-level compaction/retry status where the SDK permits it. Promote LSP diagnostics from aggregate counts to per-file details and an agent-facing diagnostic tool. Consider patch, web, plan, task, skill, and MCP capabilities only in response to concrete coding workflows; provider breadth remains out of scope.
+Add project-scoped session browsing and explicit session selection, Copilot connection/status and model discovery, accurate model context limits, visible usage uncertainty, and harness-owned compaction/retry status. Promote LSP diagnostics from aggregate counts to per-file details and an agent-facing diagnostic tool. Consider patch, web, plan, task, skill, and MCP capabilities only in response to concrete coding workflows; provider breadth remains out of scope.
 
 Done when session/context status is trustworthy and users can diagnose common failures or navigate a project without leaving the TUI.
 

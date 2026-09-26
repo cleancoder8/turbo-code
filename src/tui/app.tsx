@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { layout } from "./layout.js";
-import { Sidebar } from "./sidebar.js";
-import { Composer, Welcome } from "./screen.js";
+import { Sidebar, sidebarMaxScroll } from "./sidebar.js";
+import { Composer, Processing, Welcome } from "./screen.js";
 import type { LspService, LspStatus } from "../lsp/service.js";
 import type { UsageSnapshot } from "../session/usage.js";
 import type { Agent } from "../agent/index.js";
@@ -14,6 +14,7 @@ import {
   footer as renderFooter,
   pagePad,
   toolCard,
+  toolCardOverflow,
   toolResult,
   userBlock,
   permView,
@@ -22,7 +23,7 @@ import {
   turnLine,
 } from "./blocks.js";
 import { colors } from "./theme.js";
-import { disableMouse, enableMouse, wheelSteps } from "./mouse.js";
+import { clickEvents, disableMouse, enableMouse, wheelEvents } from "./mouse.js";
 
 export interface AppProps {
   agent: Agent;
@@ -40,7 +41,8 @@ interface PendingPerm {
   resolve: (d: Decision) => void;
 }
 
-type Block = { kind: "user" | "assistant" | "tool" | "result" | "error" | "thought" | "turn"; text: string; extra?: string; ok?: boolean; id?: string; output?: string };
+type Block = { kind: "user" | "assistant" | "tool" | "result" | "error" | "thought" | "turn"; text: string; extra?: string; ok?: boolean; id?: string; output?: string; expanded?: boolean };
+type TranscriptRow = { text: string; expandableBlock?: number };
 
 export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _ask, lsp, contextWindow }: AppProps): React.ReactElement {
   const { exit } = useApp();
@@ -60,16 +62,19 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
   });
   const [usageTurn, setUsageTurn] = useState<string>();
   const geom = layout(termWidth, sidebarOverride);
-  const chatInset = 1;
-  const mainWidth = geom.chatWidth - chatInset - (geom.sidebarVisible ? 1 : 0);
-  const transcriptWidth = Math.max(10, mainWidth - 1);
-  const chatTermWidth = transcriptWidth + 2 * pagePad;
+  const chatInset = 2;
+  const mainWidth = geom.chatWidth - 2 * chatInset;
+  const transcriptWidth = Math.max(10, mainWidth - 2);
+  // Leave one cell before the scroll gutter so Ink never adds a truncation
+  // ellipsis to a full-width styled row at the pane edge.
+  const chatTermWidth = Math.max(1, transcriptWidth - 1) + 2 * pagePad;
   const runId = useRef(0);
   const [stream, setStream] = useState("");
   const [status, setStatus] = useState("ready");
   const [pendingPerm, setPendingPerm] = useState<PendingPerm | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [processingPhase, setProcessingPhase] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const streamRef = useRef("");
   const pendingTextRef = useRef("");
@@ -79,6 +84,7 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
   const awaitingTextRef = useRef(false);
   const [awaitingText, setAwaitingText] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [sidebarScroll, setSidebarScroll] = useState(0);
   const welcome = blocks.length === 0 && stream === "" && !busy;
   const activeTool = blocks.some((block) => block.kind === "tool" && block.output === undefined);
   const sidebarTitle = blocks.find((b) => b.kind === "user")?.text.split("\n", 1)[0] ?? agent.session.meta.title;
@@ -102,6 +108,11 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
     return () => { stdout.write(`${disableMouse}\x1b]111\x07`); };
   }, [stdout]);
   useEffect(() => () => { if (drainTimerRef.current) clearInterval(drainTimerRef.current); }, []);
+  useEffect(() => {
+    if (!busy) return;
+    const timer = setInterval(() => setProcessingPhase((phase) => (phase + 1) % 8), 120);
+    return () => clearInterval(timer);
+  }, [busy]);
 
   const flushStream = useCallback(() => {
     const cur = streamRef.current;
@@ -193,6 +204,7 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
         },
         onDone: (usage) => {
           if (runId.current !== thisRun) return;
+          if (ctrl.signal.aborted) return;
           if (awaitingTextRef.current) {
             awaitingTextRef.current = false;
             setAwaitingText(false);
@@ -209,8 +221,8 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
           streamRef.current += pendingTextRef.current;
           pendingTextRef.current = "";
           flushStream();
-          setBlocks((b) => [...b, { kind: "error", text: e.message }]);
-          setStatus("error");
+          if (!ctrl.signal.aborted) setBlocks((b) => [...b, { kind: "error", text: e.message }]);
+          setStatus(ctrl.signal.aborted ? "cancelled" : "error");
           setBusy(false);
           abortRef.current = null;
         },
@@ -237,42 +249,47 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
     [pendingPerm],
   );
 
-  const transcriptHeight = Math.max(1, screenHeight - 6 - (pendingPerm ? 3 : 0));
-  const transcriptLines = useMemo(() => {
-    const lines: string[] = [];
-    for (const b of blocks) {
+  const transcriptHeight = Math.max(1, screenHeight - 7 - (pendingPerm ? 3 : 0));
+  const transcriptRows = useMemo(() => {
+    const rows: TranscriptRow[] = [];
+    for (const [index, b] of blocks.entries()) {
       let rendered: string;
       switch (b.kind) {
         case "user": rendered = userBlock(b.text, chatTermWidth); break;
         case "assistant": rendered = assistantBlock(b.text, chatTermWidth); break;
-        case "tool": rendered = toolCard(b.text, b.extra ?? "", b.output, b.ok, chatTermWidth); break;
+        case "tool": rendered = toolCard(b.text, b.extra ?? "", b.output, b.ok, chatTermWidth, b.expanded); break;
         case "result": rendered = toolResult(!!b.ok, b.text, chatTermWidth); break;
         case "error": rendered = errorBlock(b.text, chatTermWidth); break;
         case "thought": rendered = thoughtLine(Number(b.text)); break;
         case "turn": rendered = turnLine(modelID, Number(b.text)); break;
       }
-      lines.push(...rendered.split("\n"), "");
+      const expandableBlock = b.kind === "tool" && toolCardOverflow(b.text, b.output, chatTermWidth) ? index : undefined;
+      rows.push(...rendered.split("\n").map((text) => ({ text, expandableBlock })), { text: "" });
     }
-    if (awaitingText) lines.push(thinkingLine());
-    if (stream) lines.push(...assistantBlock(stream, chatTermWidth).split("\n"));
-    return lines;
+    if (awaitingText) rows.push({ text: thinkingLine() });
+    if (stream) rows.push(...assistantBlock(stream, chatTermWidth).split("\n").map((text) => ({ text })));
+    return rows;
   }, [blocks, stream, awaitingText, chatTermWidth, modelID]);
-  const maxScroll = Math.max(0, transcriptLines.length - transcriptHeight);
+  const maxScroll = Math.max(0, transcriptRows.length - transcriptHeight);
   const offset = Math.min(scrollOffset, maxScroll);
-  const firstVisible = Math.max(0, transcriptLines.length - transcriptHeight - offset);
-  const visibleLines = transcriptLines.slice(firstVisible, firstVisible + transcriptHeight);
-  const previousLineCount = useRef(transcriptLines.length);
+  const firstVisible = Math.max(0, transcriptRows.length - transcriptHeight - offset);
+  const visibleRows = transcriptRows.slice(firstVisible, firstVisible + transcriptHeight);
+  const previousLineCount = useRef(transcriptRows.length);
   useEffect(() => {
-    const added = transcriptLines.length - previousLineCount.current;
-    previousLineCount.current = transcriptLines.length;
+    const added = transcriptRows.length - previousLineCount.current;
+    previousLineCount.current = transcriptRows.length;
     if (added > 0) setScrollOffset((old) => old > 0 ? Math.min(maxScroll, old + added) : old);
-  }, [transcriptLines.length, maxScroll]);
-
+  }, [transcriptRows.length, maxScroll]);
   useInput((input, key) => {
     if (key.ctrl && input === "c") { pendingPerm?.resolve("deny"); abortRef.current?.abort(); exit(); return; }
     if (key.ctrl && input === "x") {
       pendingPerm?.resolve("deny"); setPendingPerm(null);
       abortRef.current?.abort(); if (busy) setStatus("cancelling…"); return;
+    }
+    if (key.escape && busy && !pendingPerm) {
+      abortRef.current?.abort();
+      setStatus("cancelling…");
+      return;
     }
     if (pendingPerm) {
       if (input === "y") answerPerm("allow_once");
@@ -285,9 +302,25 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
       else setSidebarOverride((v) => !(v ?? termWidth >= 110));
       return;
     }
-    const wheel = wheelSteps(input);
-    if (wheel !== 0) {
-      setScrollOffset((old) => Math.max(0, Math.min(maxScroll, old + wheel * 3)));
+    const wheel = wheelEvents(input);
+    if (wheel.length > 0) {
+      for (const event of wheel) {
+        if (geom.sidebarVisible && event.x > geom.chatWidth) {
+          setSidebarScroll((old) => Math.max(0, Math.min(sidebarMaxScroll(screenHeight, lspStatus), old - event.direction * 3)));
+        } else if (event.y <= transcriptHeight) {
+          setScrollOffset((old) => Math.max(0, Math.min(maxScroll, old + event.direction * 3)));
+        }
+      }
+      return;
+    }
+    const clicks = clickEvents(input);
+    if (clicks.length > 0) {
+      if (!welcome && !narrowStatus) for (const click of clicks) {
+        if (click.x <= chatInset || click.x > geom.chatWidth - chatInset || click.y < 1 || click.y > transcriptHeight) continue;
+        const index = visibleRows[click.y - 1]?.expandableBlock;
+        if (index !== undefined) setBlocks((current) => current.map((block, i) =>
+          i === index ? { ...block, expanded: !block.expanded } : block));
+      }
       return;
     }
     if (key.pageUp || (key.ctrl && key.upArrow)) {
@@ -307,25 +340,27 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
       <Text>{renderFooter(cwd, "turbo-code v0.1.0", termWidth)}</Text>
     </> :
       <Box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
-        {narrowStatus ? <Sidebar width={geom.width} height={screenHeight} title={sidebarTitle} usage={usage} lsp={lspStatus} contextWindow={contextWindow} cwd={cwd} branch={branch} /> : <>
-          <Box width={geom.chatWidth} flexDirection="column" flexGrow={1} overflow="hidden" paddingLeft={chatInset} paddingRight={geom.sidebarVisible ? 1 : 0}>
+        {narrowStatus ? <Sidebar width={geom.width} height={screenHeight} title={sidebarTitle} usage={usage} lsp={lspStatus} contextWindow={contextWindow} cwd={cwd} branch={branch} scrollOffset={sidebarScroll} /> : <>
+          <Box width={geom.chatWidth} flexDirection="column" flexGrow={1} overflow="hidden" paddingLeft={chatInset} paddingRight={chatInset}>
             <Box flexDirection="row" height={transcriptHeight} overflow="hidden">
               <Box width={transcriptWidth} flexDirection="column" overflow="hidden">
-                {visibleLines.map((line, i) => <Text key={`${firstVisible + i}-${i}`} wrap="truncate-end">{line || " "}</Text>)}
+                {visibleRows.map((row, i) => <Text key={`${firstVisible + i}-${i}`} wrap="truncate-end">{row.text || " "}</Text>)}
               </Box>
+              <Box width={1} />
               <Box width={1} flexDirection="column">
                 {Array.from({ length: transcriptHeight }, (_, i) => {
-                  const thumbHeight = Math.max(1, Math.floor(transcriptHeight * transcriptHeight / Math.max(transcriptHeight, transcriptLines.length)));
+                  const thumbHeight = Math.max(1, Math.floor(transcriptHeight * transcriptHeight / Math.max(transcriptHeight, transcriptRows.length)));
                   const thumbStart = maxScroll === 0 ? 0 : Math.round((maxScroll - offset) / maxScroll * (transcriptHeight - thumbHeight));
-                  return <Text key={i} color={i >= thumbStart && i < thumbStart + thumbHeight && maxScroll > 0 ? colors.border : colors.bg}>{maxScroll > 0 ? "┃" : " "}</Text>;
+                  return <Text key={i} color={i >= thumbStart && i < thumbStart + thumbHeight && maxScroll > 0 ? colors.border : colors.element}>{maxScroll > 0 ? "┃" : " "}</Text>;
                 })}
               </Box>
             </Box>
             {pendingPerm && <Box marginBottom={1}><Text>{permView(pendingPerm.req, chatTermWidth)}</Text></Box>}
             <Composer width={mainWidth} model={modelID} value={input} busy={busy} busyLabel={activeTool ? "Running tool…" : awaitingText ? "Thinking…" : "Writing…"} onChange={setInput} onSubmit={onSubmit} spacious />
+            {busy ? <Processing phase={processingPhase} /> : <Box height={1} />}
             <Text>{renderFooter(cwd, chatStatus, mainWidth)}</Text>
           </Box>
-          {geom.sidebarVisible && <Sidebar width={geom.sidebarWidth} height={screenHeight} title={sidebarTitle} usage={usage} lsp={lspStatus} contextWindow={contextWindow} cwd={cwd} branch={branch} />}
+          {geom.sidebarVisible && <Sidebar width={geom.sidebarWidth} height={screenHeight} title={sidebarTitle} usage={usage} lsp={lspStatus} contextWindow={contextWindow} cwd={cwd} branch={branch} scrollOffset={sidebarScroll} />}
         </>}
       </Box>}
   </Box>;

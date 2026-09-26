@@ -1,4 +1,4 @@
-import { styles, agentChar } from "./theme.js";
+import { colors, styles, agentChar } from "./theme.js";
 import type { Request as PermRequest } from "../permission/types.js";
 import { renderMarkdown } from "./markdown.js";
 
@@ -57,7 +57,34 @@ export function toolLine(name: string, args: string, termWidth: number): string 
   return padLeft(s, 3);
 }
 
-export function toolCard(name: string, args: string, output: string | undefined, ok: boolean | undefined, termWidth: number): string {
+function cleanToolText(s: string): string {
+  return s
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\t/g, "    ")
+    .replace(/\r/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+}
+
+function toolPreview(name: string, output: string | undefined, termWidth: number): { text: string; overflow: boolean } {
+  if (output === undefined) return { text: "", overflow: false };
+  const text = cleanToolText(output).replace(/\n+$/, "");
+  const maxLines = name === "bash" ? 10 : 3;
+  const maxChars = maxLines * Math.max(20, contentWidth(termWidth) - 6);
+  const rows = text.split("\n");
+  if (rows.length <= maxLines && [...text].length <= maxChars) return { text, overflow: false };
+  const preview = rows.slice(0, maxLines).join("\n");
+  if ([...preview].length > maxChars) {
+    return { text: [...preview].slice(0, maxChars - 1).join("") + "…", overflow: true };
+  }
+  return { text: preview + "\n…", overflow: true };
+}
+
+export function toolCardOverflow(name: string, output: string | undefined, termWidth: number): boolean {
+  return toolPreview(name, output, termWidth).overflow;
+}
+
+export function toolCard(name: string, args: string, output: string | undefined, ok: boolean | undefined, termWidth: number, expanded = false): string {
   const w = contentWidth(termWidth);
   const inner = Math.max(1, w - 1);
   let header = name;
@@ -69,26 +96,28 @@ export function toolCard(name: string, args: string, output: string | undefined,
     else if (name === "edit" && typeof parsed.file_path === "string") header = `→ Edit ${parsed.file_path}`;
     else if (args) header = `${name} ${args}`;
   } catch { if (args) header = `${name} ${args}`; }
-  // Tool output can contain tabs (notably the numbered file reader). A tab
-  // expands in the terminal, so it must be replaced before sizing the row.
-  const clean = (s: string) => s
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
-    .replace(/\t/g, "    ")
-    .replace(/\r/g, "")
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-  if (name === "read" && ok !== false) return "  " + styles.tool(clean(header));
-  const line = (s: string) => {
-    const visible = [...clean(s)];
+  const preview = toolPreview(name, output, termWidth);
+  if (name === "read" && ok !== false && !preview.overflow) return "  " + styles.tool(cleanToolText(header));
+  const line = (s: string, muted = false) => {
+    const visible = [...cleanToolText(s)];
     const text = visible.length > inner - 2 ? visible.slice(0, Math.max(0, inner - 3)).join("") + "…" : visible.join("");
-    return styles.toolBorder("┃") + styles.panel(("  " + text).padEnd(inner, " "));
+    const body = ("  " + text).padEnd(inner, " ");
+    return styles.toolBorder("┃") + (muted ? styles.panel.hex(colors.muted)(body) : styles.panel(body));
   };
   const lines = [line(""), line(header), line("")];
   if (output === undefined) lines.push(line("Running…"));
   else {
-    const rows = clean(output).replace(/\n+$/, "").split("\n");
-    for (const row of rows) lines.push(line(row));
+    const shown = expanded ? cleanToolText(output).replace(/\n+$/, "") : preview.text;
+    for (const row of shown.split("\n")) {
+      const chars = [...row];
+      const rowWidth = Math.max(1, inner - 2);
+      if (chars.length === 0) lines.push(line(""));
+      else for (let start = 0; start < chars.length; start += rowWidth) {
+        lines.push(line(chars.slice(start, start + rowWidth).join("")));
+      }
+    }
     if (ok === false) lines.push(line("✗ Tool failed"));
+    if (preview.overflow) lines.push(line(""), line(expanded ? "Click to collapse" : "Click to expand", true));
   }
   lines.push(line(""));
   return lines.join("\n");
