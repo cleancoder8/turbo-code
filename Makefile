@@ -1,6 +1,6 @@
 .PHONY: check build
 check:
-	go vet ./...
-	go test -race ./...
+	npm run typecheck
+	npm test
 build:
-	go build -o turbo-code ./cmd/turbo-code
+	npm run build

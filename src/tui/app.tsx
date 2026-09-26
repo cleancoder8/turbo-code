@@ -1,0 +1,332 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { layout } from "./layout.js";
+import { Sidebar } from "./sidebar.js";
+import { Composer, Welcome } from "./screen.js";
+import type { LspService, LspStatus } from "../lsp/service.js";
+import type { UsageSnapshot } from "../session/usage.js";
+import type { Agent } from "../agent/index.js";
+import type { Decision, Request as PermRequest } from "../permission/types.js";
+import { runAgent, wirePerms } from "./agentbridge.js";
+import {
+  assistantBlock,
+  errorBlock,
+  footer as renderFooter,
+  pagePad,
+  toolCard,
+  toolResult,
+  userBlock,
+  permView,
+  thinkingLine,
+  thoughtLine,
+  turnLine,
+} from "./blocks.js";
+import { colors } from "./theme.js";
+import { disableMouse, enableMouse, wheelSteps } from "./mouse.js";
+
+export interface AppProps {
+  agent: Agent;
+  modelID: string;
+  sessionID: string;
+  cwd: string;
+  branch?: string;
+  ask: (req: PermRequest) => Promise<Decision>;
+  lsp?: LspService;
+  contextWindow?: number;
+}
+
+interface PendingPerm {
+  req: PermRequest;
+  resolve: (d: Decision) => void;
+}
+
+type Block = { kind: "user" | "assistant" | "tool" | "result" | "error" | "thought" | "turn"; text: string; extra?: string; ok?: boolean; id?: string; output?: string };
+
+export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _ask, lsp, contextWindow }: AppProps): React.ReactElement {
+  const { exit } = useApp();
+  const { stdout } = useStdout();
+  const termWidth = stdout?.columns ?? 80;
+  const termHeight = stdout?.rows ?? 24;
+  const screenHeight = Math.max(8, termHeight - 1);
+
+  const [blocks, setBlocks] = useState<Block[]>(() => agent.session.messages
+    .filter((m) => (m.role === "user" || m.role === "assistant") && m.content)
+    .map((m) => ({ kind: m.role as "user" | "assistant", text: m.content })));
+  const [sidebarOverride, setSidebarOverride] = useState<boolean | undefined>();
+  const [narrowStatus, setNarrowStatus] = useState(false);
+  const [lspStatus, setLspStatus] = useState<LspStatus[]>(lsp?.snapshot() ?? []);
+  const [usage, setUsage] = useState<UsageSnapshot>(agent.usage?.snapshot() ?? {
+    turn: { inputTokens: 0, outputTokens: 0 }, session: { inputTokens: 0, outputTokens: 0 }, partial: true,
+  });
+  const [usageTurn, setUsageTurn] = useState<string>();
+  const geom = layout(termWidth, sidebarOverride);
+  const chatInset = 1;
+  const mainWidth = geom.chatWidth - chatInset - (geom.sidebarVisible ? 1 : 0);
+  const transcriptWidth = Math.max(10, mainWidth - 1);
+  const chatTermWidth = transcriptWidth + 2 * pagePad;
+  const runId = useRef(0);
+  const [stream, setStream] = useState("");
+  const [status, setStatus] = useState("ready");
+  const [pendingPerm, setPendingPerm] = useState<PendingPerm | null>(null);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const streamRef = useRef("");
+  const pendingTextRef = useRef("");
+  const modelDoneRef = useRef<{ inputTokens: number; outputTokens: number; elapsed: number } | null>(null);
+  const drainTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const turnStartRef = useRef(0);
+  const awaitingTextRef = useRef(false);
+  const [awaitingText, setAwaitingText] = useState(false);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const welcome = blocks.length === 0 && stream === "" && !busy;
+  const activeTool = blocks.some((block) => block.kind === "tool" && block.output === undefined);
+  const sidebarTitle = blocks.find((b) => b.kind === "user")?.text.split("\n", 1)[0] ?? agent.session.meta.title;
+  const sessionTokens = usage.session.inputTokens + usage.session.outputTokens;
+  const tokenLabel = sessionTokens >= 1000 ? `${(sessionTokens / 1000).toFixed(1)}K` : String(sessionTokens);
+  const contextPercent = contextWindow && usage.lastRequest ? ` (${Math.round(usage.lastRequest.inputTokens / contextWindow * 100)}%)` : "";
+  const transientStatus = status === "error" || status === "cancelled" || status === "cancelling…" ? `${status} · ` : "";
+  const chatStatus = `${tokenLabel}${contextPercent} · ${transientStatus}ctrl+b sidebar`;
+
+  useEffect(() => {
+    wirePerms(agent, (req) =>
+      new Promise<Decision>((resolve) => {
+        setPendingPerm({ req, resolve });
+      }),
+    );
+  }, [agent]);
+  useEffect(() => lsp?.subscribe(setLspStatus), [lsp]);
+  useEffect(() => {
+    if (!stdout?.isTTY) return;
+    stdout.write(`\x1b]11;${colors.bg}\x07${enableMouse}`);
+    return () => { stdout.write(`${disableMouse}\x1b]111\x07`); };
+  }, [stdout]);
+  useEffect(() => () => { if (drainTimerRef.current) clearInterval(drainTimerRef.current); }, []);
+
+  const flushStream = useCallback(() => {
+    const cur = streamRef.current;
+    if (cur === "") return;
+    setBlocks((b) => [...b, { kind: "assistant", text: cur }]);
+    streamRef.current = "";
+    setStream("");
+  }, []);
+
+  const onSubmit = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (trimmed === "" || busy) return;
+      flushStream();
+      setBlocks((b) => [...b, { kind: "user", text: trimmed }]);
+      setStatus("thinking…");
+      setInput("");
+      setBusy(true);
+      turnStartRef.current = Date.now();
+      awaitingTextRef.current = true;
+      setAwaitingText(true);
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      const thisRun = ++runId.current;
+      pendingTextRef.current = "";
+      modelDoneRef.current = null;
+      if (drainTimerRef.current) clearInterval(drainTimerRef.current);
+      drainTimerRef.current = setInterval(() => {
+        if (runId.current !== thisRun) return;
+        const queued = pendingTextRef.current;
+        if (queued) {
+          // Let short replies unfold at a readable pace, then catch up quickly
+          // when a large response is already waiting in the queue.
+          const count = queued.length <= 120 ? 2 :
+            Math.min(256, 2 + Math.ceil((queued.length - 120) / 12));
+          streamRef.current += queued.slice(0, count);
+          pendingTextRef.current = queued.slice(count);
+          setStream(streamRef.current);
+        } else if (modelDoneRef.current) {
+          const amount = modelDoneRef.current;
+          modelDoneRef.current = null;
+          if (drainTimerRef.current) clearInterval(drainTimerRef.current);
+          drainTimerRef.current = null;
+          flushStream();
+          setBlocks((b) => [...b, { kind: "turn", text: String(amount.elapsed) }]);
+          setStatus(`in ${amount.inputTokens} · out ${amount.outputTokens} tokens`);
+          setBusy(false);
+          abortRef.current = null;
+        }
+      }, 30);
+      setUsageTurn(undefined);
+      if (agent.usage) setUsage(agent.usage.snapshot());
+
+      void runAgent(agent, trimmed, ctrl.signal, {
+        onText: (t) => {
+          if (runId.current !== thisRun) return;
+          if (awaitingTextRef.current && t) {
+            awaitingTextRef.current = false;
+            setAwaitingText(false);
+            setBlocks((b) => [...b, { kind: "thought", text: String(Date.now() - turnStartRef.current) }]);
+          }
+          pendingTextRef.current += t;
+        },
+        onToolStart: (callId, name, args) => {
+          if (runId.current !== thisRun) return;
+          streamRef.current += pendingTextRef.current;
+          pendingTextRef.current = "";
+          flushStream();
+          const firstActivity = awaitingTextRef.current;
+          if (firstActivity) {
+            awaitingTextRef.current = false;
+            setAwaitingText(false);
+          }
+          setBlocks((b) => [...b,
+            ...(firstActivity ? [{ kind: "thought" as const, text: String(Date.now() - turnStartRef.current) }] : []),
+            { kind: "tool", id: callId, text: name, extra: args },
+          ]);
+        },
+        onToolEnd: (callId, ok, output) => {
+          if (runId.current !== thisRun) return;
+          setBlocks((b) => b.some((block) => block.kind === "tool" && block.id === callId)
+            ? b.map((block) => block.kind === "tool" && block.id === callId ? { ...block, output, ok } : block)
+            : [...b, { kind: "result", text: output, ok }]);
+        },
+        onUsage: (_amount, turnId) => {
+          if (runId.current !== thisRun) return;
+          setUsageTurn(turnId);
+          setUsage(agent.usage?.snapshot(turnId) ?? { turn: _amount, session: _amount, lastRequest: _amount, partial: true });
+        },
+        onDone: (usage) => {
+          if (runId.current !== thisRun) return;
+          if (awaitingTextRef.current) {
+            awaitingTextRef.current = false;
+            setAwaitingText(false);
+            setBlocks((b) => [...b, { kind: "thought", text: String(Date.now() - turnStartRef.current) }]);
+          }
+          modelDoneRef.current = { ...usage, elapsed: Date.now() - turnStartRef.current };
+        },
+        onError: (e) => {
+          if (runId.current !== thisRun) return;
+          awaitingTextRef.current = false;
+          setAwaitingText(false);
+          if (drainTimerRef.current) clearInterval(drainTimerRef.current);
+          drainTimerRef.current = null;
+          streamRef.current += pendingTextRef.current;
+          pendingTextRef.current = "";
+          flushStream();
+          setBlocks((b) => [...b, { kind: "error", text: e.message }]);
+          setStatus("error");
+          setBusy(false);
+          abortRef.current = null;
+        },
+      }).finally(() => {
+        if (runId.current !== thisRun) return;
+        if (modelDoneRef.current) return;
+        if (drainTimerRef.current) clearInterval(drainTimerRef.current);
+        drainTimerRef.current = null;
+        awaitingTextRef.current = false;
+        setAwaitingText(false);
+        setBusy(false); abortRef.current = null;
+        setStatus((s) => s === "cancelling…" ? "cancelled" : s);
+      });
+    },
+    [agent, busy, flushStream],
+  );
+
+  const answerPerm = useCallback(
+    (d: Decision) => {
+      if (!pendingPerm) return;
+      pendingPerm.resolve(d);
+      setPendingPerm(null);
+    },
+    [pendingPerm],
+  );
+
+  const transcriptHeight = Math.max(1, screenHeight - 6 - (pendingPerm ? 3 : 0));
+  const transcriptLines = useMemo(() => {
+    const lines: string[] = [];
+    for (const b of blocks) {
+      let rendered: string;
+      switch (b.kind) {
+        case "user": rendered = userBlock(b.text, chatTermWidth); break;
+        case "assistant": rendered = assistantBlock(b.text, chatTermWidth); break;
+        case "tool": rendered = toolCard(b.text, b.extra ?? "", b.output, b.ok, chatTermWidth); break;
+        case "result": rendered = toolResult(!!b.ok, b.text, chatTermWidth); break;
+        case "error": rendered = errorBlock(b.text, chatTermWidth); break;
+        case "thought": rendered = thoughtLine(Number(b.text)); break;
+        case "turn": rendered = turnLine(modelID, Number(b.text)); break;
+      }
+      lines.push(...rendered.split("\n"), "");
+    }
+    if (awaitingText) lines.push(thinkingLine());
+    if (stream) lines.push(...assistantBlock(stream, chatTermWidth).split("\n"));
+    return lines;
+  }, [blocks, stream, awaitingText, chatTermWidth, modelID]);
+  const maxScroll = Math.max(0, transcriptLines.length - transcriptHeight);
+  const offset = Math.min(scrollOffset, maxScroll);
+  const firstVisible = Math.max(0, transcriptLines.length - transcriptHeight - offset);
+  const visibleLines = transcriptLines.slice(firstVisible, firstVisible + transcriptHeight);
+  const previousLineCount = useRef(transcriptLines.length);
+  useEffect(() => {
+    const added = transcriptLines.length - previousLineCount.current;
+    previousLineCount.current = transcriptLines.length;
+    if (added > 0) setScrollOffset((old) => old > 0 ? Math.min(maxScroll, old + added) : old);
+  }, [transcriptLines.length, maxScroll]);
+
+  useInput((input, key) => {
+    if (key.ctrl && input === "c") { pendingPerm?.resolve("deny"); abortRef.current?.abort(); exit(); return; }
+    if (key.ctrl && input === "x") {
+      pendingPerm?.resolve("deny"); setPendingPerm(null);
+      abortRef.current?.abort(); if (busy) setStatus("cancelling…"); return;
+    }
+    if (pendingPerm) {
+      if (input === "y") answerPerm("allow_once");
+      else if (input === "a") answerPerm("allow_always");
+      else if (input === "n" || key.escape) answerPerm("deny");
+      return;
+    }
+    if (key.ctrl && input === "b") {
+      if (termWidth < 110) setNarrowStatus((v) => !v);
+      else setSidebarOverride((v) => !(v ?? termWidth >= 110));
+      return;
+    }
+    const wheel = wheelSteps(input);
+    if (wheel !== 0) {
+      setScrollOffset((old) => Math.max(0, Math.min(maxScroll, old + wheel * 3)));
+      return;
+    }
+    if (key.pageUp || (key.ctrl && key.upArrow)) {
+      setScrollOffset((old) => Math.min(maxScroll, old + Math.max(1, transcriptHeight - 3)));
+      return;
+    }
+    if (key.pageDown || (key.ctrl && key.downArrow)) {
+      setScrollOffset((old) => Math.max(0, old - Math.max(1, transcriptHeight - 3)));
+      return;
+    }
+    if (key.escape && narrowStatus) setNarrowStatus(false);
+  });
+
+  return <Box flexDirection="column" paddingX={pagePad} width={termWidth} height={screenHeight}>
+    {welcome ? <>
+      <Welcome width={geom.width} model={modelID} value={input} busy={busy} onChange={setInput} onSubmit={onSubmit} />
+      <Text>{renderFooter(cwd, "turbo-code v0.1.0", termWidth)}</Text>
+    </> :
+      <Box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
+        {narrowStatus ? <Sidebar width={geom.width} height={screenHeight} title={sidebarTitle} usage={usage} lsp={lspStatus} contextWindow={contextWindow} cwd={cwd} branch={branch} /> : <>
+          <Box width={geom.chatWidth} flexDirection="column" flexGrow={1} overflow="hidden" paddingLeft={chatInset} paddingRight={geom.sidebarVisible ? 1 : 0}>
+            <Box flexDirection="row" height={transcriptHeight} overflow="hidden">
+              <Box width={transcriptWidth} flexDirection="column" overflow="hidden">
+                {visibleLines.map((line, i) => <Text key={`${firstVisible + i}-${i}`} wrap="truncate-end">{line || " "}</Text>)}
+              </Box>
+              <Box width={1} flexDirection="column">
+                {Array.from({ length: transcriptHeight }, (_, i) => {
+                  const thumbHeight = Math.max(1, Math.floor(transcriptHeight * transcriptHeight / Math.max(transcriptHeight, transcriptLines.length)));
+                  const thumbStart = maxScroll === 0 ? 0 : Math.round((maxScroll - offset) / maxScroll * (transcriptHeight - thumbHeight));
+                  return <Text key={i} color={i >= thumbStart && i < thumbStart + thumbHeight && maxScroll > 0 ? colors.border : colors.bg}>{maxScroll > 0 ? "┃" : " "}</Text>;
+                })}
+              </Box>
+            </Box>
+            {pendingPerm && <Box marginBottom={1}><Text>{permView(pendingPerm.req, chatTermWidth)}</Text></Box>}
+            <Composer width={mainWidth} model={modelID} value={input} busy={busy} busyLabel={activeTool ? "Running tool…" : awaitingText ? "Thinking…" : "Writing…"} onChange={setInput} onSubmit={onSubmit} spacious />
+            <Text>{renderFooter(cwd, chatStatus, mainWidth)}</Text>
+          </Box>
+          {geom.sidebarVisible && <Sidebar width={geom.sidebarWidth} height={screenHeight} title={sidebarTitle} usage={usage} lsp={lspStatus} contextWindow={contextWindow} cwd={cwd} branch={branch} />}
+        </>}
+      </Box>}
+  </Box>;
+}

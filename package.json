@@ -1,0 +1,43 @@
+{
+  "name": "turbo-code",
+  "version": "0.1.0",
+  "description": "GitHub Copilot terminal coding agent",
+  "type": "module",
+  "bin": {
+    "turbo-code": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "tsx src/cli.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.14",
+    "chalk": "^5.3.0",
+    "fast-glob": "^3.3.2",
+    "ink": "^4.4.1",
+    "ink-text-input": "^5.0.0",
+    "marked": "^4.3.0",
+    "marked-terminal": "^7.1.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/marked": "^5.0.2",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "esbuild": "^0.24.0",
+    "ink-testing-library": "^3.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}
