@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { layout } from "./layout.js";
 import { Sidebar, sidebarMaxScroll } from "./sidebar.js";
 import { Composer, Processing, Welcome } from "./screen.js";
+import { PermissionPrompt, permissionClickChoice, permissionLayout, permissionOptions, type PermissionStage } from "./permission.js";
 import type { LspService, LspStatus } from "../lsp/service.js";
 import type { UsageSnapshot } from "../session/usage.js";
 import type { Agent } from "../agent/index.js";
@@ -17,7 +18,6 @@ import {
   toolCardOverflow,
   toolResult,
   userBlock,
-  permView,
   thinkingLine,
   thoughtLine,
   turnLine,
@@ -72,6 +72,9 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
   const [stream, setStream] = useState("");
   const [status, setStatus] = useState("ready");
   const [pendingPerm, setPendingPerm] = useState<PendingPerm | null>(null);
+  const [permissionStage, setPermissionStage] = useState<PermissionStage>("choose");
+  const [permissionChoice, setPermissionChoice] = useState<Decision | "back">("allow_once");
+  const [permissionScroll, setPermissionScroll] = useState(0);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [processingPhase, setProcessingPhase] = useState(0);
@@ -97,6 +100,9 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
   useEffect(() => {
     wirePerms(agent, (req) =>
       new Promise<Decision>((resolve) => {
+        setPermissionStage("choose");
+        setPermissionChoice("allow_once");
+        setPermissionScroll(0);
         setPendingPerm({ req, resolve });
       }),
     );
@@ -249,7 +255,20 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
     [pendingPerm],
   );
 
-  const transcriptHeight = Math.max(1, screenHeight - 7 - (pendingPerm ? 3 : 0));
+  const selectPermission = (choice: Decision | "back") => {
+    if (choice === "back") {
+      setPermissionStage("choose");
+      setPermissionChoice("allow_always");
+      setPermissionScroll(0);
+    } else if (choice === "allow_always" && permissionStage === "choose") {
+      setPermissionStage("always");
+      setPermissionChoice("allow_always");
+      setPermissionScroll(0);
+    } else answerPerm(choice);
+  };
+
+  const permissionPanel = pendingPerm ? permissionLayout(pendingPerm.req, mainWidth, screenHeight, permissionStage, permissionScroll) : undefined;
+  const transcriptHeight = Math.max(1, screenHeight - 7 - (permissionPanel ? permissionPanel.height + 1 : 0));
   const transcriptRows = useMemo(() => {
     const rows: TranscriptRow[] = [];
     for (const [index, b] of blocks.entries()) {
@@ -292,9 +311,31 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
       return;
     }
     if (pendingPerm) {
-      if (input === "y") answerPerm("allow_once");
-      else if (input === "a") answerPerm("allow_always");
-      else if (input === "n" || key.escape) answerPerm("deny");
+      const wheel = wheelEvents(input);
+      if (wheel.length > 0) {
+        for (const event of wheel) setPermissionScroll((old) => Math.max(0, Math.min(permissionPanel?.maxScroll ?? 0, old - event.direction)));
+        return;
+      }
+      const clicks = clickEvents(input);
+      if (clicks.length > 0) {
+        for (const click of clicks) {
+          if (click.y !== transcriptHeight + (permissionPanel?.height ?? 0) - ((permissionPanel?.footerRows ?? 2) - 1)) continue;
+          const choice = permissionClickChoice(click.x, chatInset + 1, mainWidth, permissionStage);
+          if (choice) selectPermission(choice);
+        }
+        return;
+      }
+      if (key.upArrow) setPermissionScroll((old) => Math.max(0, old - 1));
+      else if (key.downArrow) setPermissionScroll((old) => Math.min(permissionPanel?.maxScroll ?? 0, old + 1));
+      else if (key.leftArrow || input === "h" || key.rightArrow || input === "l") {
+        const options = permissionOptions(permissionStage);
+        const index = options.findIndex((option) => option.decision === permissionChoice);
+        const next = (index + (key.leftArrow || input === "h" ? options.length - 1 : 1)) % options.length;
+        setPermissionChoice(options[next]!.decision);
+      } else if (key.return) selectPermission(permissionChoice);
+      else if (input === "y" && permissionStage === "choose") selectPermission("allow_once");
+      else if (input === "a") selectPermission("allow_always");
+      else if (input === "n" || key.escape) selectPermission(permissionStage === "always" ? "back" : "deny");
       return;
     }
     if (key.ctrl && input === "b") {
@@ -355,7 +396,7 @@ export function App({ agent, modelID, sessionID: _sessionID, cwd, branch, ask: _
                 })}
               </Box>
             </Box>
-            {pendingPerm && <Box marginBottom={1}><Text>{permView(pendingPerm.req, chatTermWidth)}</Text></Box>}
+            {pendingPerm && <Box marginBottom={1}><PermissionPrompt req={pendingPerm.req} width={mainWidth} screenHeight={screenHeight} stage={permissionStage} selected={permissionChoice} scroll={permissionScroll} /></Box>}
             <Composer width={mainWidth} model={modelID} value={input} busy={busy} busyLabel={activeTool ? "Running tool…" : awaitingText ? "Thinking…" : "Writing…"} onChange={setInput} onSubmit={onSubmit} spacious />
             {busy ? <Processing phase={processingPhase} /> : <Box height={1} />}
             <Text>{renderFooter(cwd, chatStatus, mainWidth)}</Text>

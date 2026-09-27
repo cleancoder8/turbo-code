@@ -6,6 +6,8 @@ Date: 2026-09-26
 
 Build a **Copilot-login-only** coding harness. GitHub Copilot supplies authentication and model access. Turbo-code owns the agent loop, tool execution, permissions, context, sessions, and TUI. This assessment extends the [OpenCode parity assessment](opencode-parity-assessment.md) using current turbo-code source, installed `@github/copilot-sdk` 1.0.14 declarations, local OpenCode source, and the official documentation linked below. It is not a live benchmark or proof that direct Copilot model access works for every account and model.
 
+For the product promise, reference journey, milestone gates, and next implementation slice, see the [product and delivery plan](product-differentiation-plan.md).
+
 ## What to learn from each harness
 
 | Reference | Behaviors worth adopting | Evidence |

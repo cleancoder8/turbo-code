@@ -31,7 +31,7 @@ The project config overrides the global config. LSP entries merge by name; setti
 - `node dist/cli.js --continue` — resume the latest Copilot session
 - `node dist/cli.js sessions` — list Copilot sessions
 
-In the TUI, Enter sends, Ctrl+X cancels the current turn, Ctrl+C quits, and Ctrl+B toggles the token/LSP sidebar. Permission prompts use `y` for once, `a` for the session, and `n` or Escape to deny.
+In the TUI, Enter sends, Ctrl+X cancels the current turn, Ctrl+C quits, and Ctrl+B toggles the token/LSP sidebar. Permission prompts use Left/Right to select, Enter to confirm, and Escape to reject. You can also use `y` for once, `a` for the session, and `n` to reject. Always-allow requests require a second confirmation; Up/Down scroll long request details.
 
 The tools are `read`, `ls`, `glob`, `grep`, `write`, `edit`, and `bash`. Tool calls run through the Copilot SDK and retain turbo-code's permission prompts for mutating operations.
 
