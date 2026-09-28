@@ -8,6 +8,8 @@ Build a **Copilot-login-only** coding harness. GitHub Copilot supplies authentic
 
 For the product promise, reference journey, milestone gates, and next implementation slice, see the [product and delivery plan](product-differentiation-plan.md).
 
+For a source-based explanation of OpenCode's client, server, session loop, providers, tools, persistence, and current V1/V2 transition, see the [OpenCode architecture guide](opencode-architecture.md).
+
 ## What to learn from each harness
 
 | Reference | Behaviors worth adopting | Evidence |

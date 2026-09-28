@@ -33,8 +33,12 @@ export function assistantBlock(md: string, termWidth: number): string {
   return padLeft(out, 3);
 }
 
+function formatDuration(ms: number): string {
+  return ms > 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
 export function thoughtLine(ms: number): string {
-  return "  " + styles.warning("+ Thought: " + ms + "ms");
+  return "  " + styles.warning("+ Thought: " + formatDuration(ms));
 }
 
 export function thinkingLine(): string {
@@ -42,7 +46,7 @@ export function thinkingLine(): string {
 }
 
 export function turnLine(model: string, ms: number): string {
-  return "  " + styles.accent("■") + "  " + styles.muted(`Build · ${model} · ${(ms / 1000).toFixed(1)}s`);
+  return "  " + styles.accent("■") + "  " + styles.muted(`Build · ${model} · ${formatDuration(ms)}`);
 }
 
 export function toolLine(name: string, args: string, termWidth: number): string {
